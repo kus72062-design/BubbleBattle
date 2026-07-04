@@ -23,6 +23,8 @@ export default class GameScene extends Phaser.Scene {
     this.gameWon = false;
     this.grid = [];
     this.tileSprites = [];
+    // ★ 추가: 벽/블록의 실제 물리 바디를 저장해둘 2차원 배열
+    this.wallBodies = [];
     this.bombs = [];
     this.items = [];
     this.enemies = [];
@@ -33,12 +35,21 @@ export default class GameScene extends Phaser.Scene {
     const level = createLevel();
     this.grid = level.grid;
 
+    this.enemyGroup = this.physics.add.group();
+    this.wallGroup = this.physics.add.staticGroup();
+
     this.drawMap();
 
-    this.enemyGroup = this.physics.add.group();
     this.player = new Player(this, 1, 1);
     this.spawnEnemies();
     this.createHud();
+
+    // ★ 추가: 플레이어와 벽/블록 사이의 실제 충돌 처리
+    // (Arcade Physics가 자동으로 벽면을 따라 미끄러지듯 처리해줘서
+    //  타일 단위 이동보다 훨씬 부드럽고 자연스러운 움직임이 됨)
+    this.physics.add.collider(this.player.sprite, this.wallGroup);
+    // ★ 추가: 적도 벽/블록과 실제 충돌하도록 (AI 판단 로직의 보험 역할)
+    this.physics.add.collider(this.enemyGroup, this.wallGroup);
 
     this.physics.add.overlap(this.player.sprite, this.enemyGroup, () => {
       if (!this.gameOver && this.player.alive) {
@@ -52,6 +63,7 @@ export default class GameScene extends Phaser.Scene {
   drawMap() {
     for (let row = 0; row < MAP_ROWS; row++) {
       this.tileSprites[row] = [];
+      this.wallBodies[row] = [];
       for (let col = 0; col < MAP_COLS; col++) {
         const pos = gridToPixel(col, row);
         const tile = this.grid[row][col];
@@ -66,6 +78,19 @@ export default class GameScene extends Phaser.Scene {
         const sprite = this.add.image(pos.x, pos.y, key);
         sprite.setDepth(tile === TILE.WALL ? 1 : 0);
         this.tileSprites[row][col] = sprite;
+
+        // ★ 추가: 벽/블록이면 보이지 않는 static physics 바디를 따로 만들어서
+        // wallGroup에 등록 (플레이어 충돌 판정용)
+        if (tile === TILE.WALL || tile === TILE.BLOCK) {
+          const body = this.physics.add.staticImage(pos.x, pos.y, key);
+          body.setVisible(false);
+          body.setSize(TILE_SIZE, TILE_SIZE);
+          body.refreshBody();
+          this.wallGroup.add(body);
+          this.wallBodies[row][col] = body;
+        } else {
+          this.wallBodies[row][col] = null;
+        }
       }
     }
   }
@@ -123,6 +148,8 @@ export default class GameScene extends Phaser.Scene {
     );
   }
 
+  // ★ 참고: canWalk는 Enemy.js 등 다른 곳에서 여전히 쓸 수 있어서 그대로 둠.
+  // 플레이어 이동은 이제 이 함수를 거치지 않고 physics collider로 처리됨.
   canWalk(col, row, allowThroughBomb = false, isPlayer = false) {
     if (col < 0 || col >= MAP_COLS || row < 0 || row >= MAP_ROWS) {
       return false;
@@ -290,6 +317,14 @@ export default class GameScene extends Phaser.Scene {
     if (tileSprite) {
       tileSprite.setTexture('tile_floor');
       tileSprite.setDepth(0);
+    }
+
+    // ★ 추가: 블록이 파괴되면 해당 위치의 물리 바디도 함께 제거
+    // (제거하지 않으면 시각적으로는 통로가 뚫렸는데 실제로는 못 지나가게 됨)
+    const body = this.wallBodies[row][col];
+    if (body) {
+      this.wallGroup.remove(body, true, true);
+      this.wallBodies[row][col] = null;
     }
 
     if (Phaser.Math.Between(0, 100) < 35) {
