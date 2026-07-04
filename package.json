@@ -1,0 +1,11 @@
+{
+  "name": "bubble-battle",
+  "version": "1.0.0",
+  "description": "Crazy Arcade style bubble battle game",
+  "scripts": {
+    "start": "npx --yes serve . -p 3000",
+    "dev": "npx --yes serve . -p 3000"
+  },
+  "keywords": ["phaser", "game", "bubble-battle"],
+  "license": "MIT"
+}
