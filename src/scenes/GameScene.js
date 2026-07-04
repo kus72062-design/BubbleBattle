@@ -23,7 +23,6 @@ export default class GameScene extends Phaser.Scene {
     this.gameWon = false;
     this.grid = [];
     this.tileSprites = [];
-    // ★ 추가: 벽/블록의 실제 물리 바디를 저장해둘 2차원 배열
     this.wallBodies = [];
     this.bombs = [];
     this.items = [];
@@ -37,6 +36,8 @@ export default class GameScene extends Phaser.Scene {
 
     this.enemyGroup = this.physics.add.group();
     this.wallGroup = this.physics.add.staticGroup();
+    // ★ 추가: 폭탄 전용 물리 그룹
+    this.bombGroup = this.physics.add.staticGroup();
 
     this.drawMap();
 
@@ -44,12 +45,30 @@ export default class GameScene extends Phaser.Scene {
     this.spawnEnemies();
     this.createHud();
 
-    // ★ 추가: 플레이어와 벽/블록 사이의 실제 충돌 처리
-    // (Arcade Physics가 자동으로 벽면을 따라 미끄러지듯 처리해줘서
-    //  타일 단위 이동보다 훨씬 부드럽고 자연스러운 움직임이 됨)
+    // 플레이어 <-> 벽/블록 충돌
     this.physics.add.collider(this.player.sprite, this.wallGroup);
-    // ★ 추가: 적도 벽/블록과 실제 충돌하도록 (AI 판단 로직의 보험 역할)
+    // ★ 추가: 적 <-> 벽/블록 충돌 (AI 판단 로직의 보험 역할)
     this.physics.add.collider(this.enemyGroup, this.wallGroup);
+
+    // ★ 추가: 적 <-> 폭탄 충돌 (적은 예외 없이 항상 막힘)
+    this.physics.add.collider(this.enemyGroup, this.bombGroup);
+
+    // ★ 추가: 플레이어 <-> 폭탄 충돌
+    // processCallback: 해당 폭탄이 "지금 이 플레이어를 통과시켜주는 상태"면
+    // 충돌을 스킵(false)하고, 아니면 정상적으로 충돌 처리(true)
+    this.physics.add.collider(
+      this.player.sprite,
+      this.bombGroup,
+      null,
+      (playerSprite, bombSprite) => {
+        const bomb = bombSprite.getData('bombRef');
+        if (!bomb) {
+          return true;
+        }
+        return !bomb.isExempt(this.player);
+      },
+      this
+    );
 
     this.physics.add.overlap(this.player.sprite, this.enemyGroup, () => {
       if (!this.gameOver && this.player.alive) {
@@ -79,8 +98,6 @@ export default class GameScene extends Phaser.Scene {
         sprite.setDepth(tile === TILE.WALL ? 1 : 0);
         this.tileSprites[row][col] = sprite;
 
-        // ★ 추가: 벽/블록이면 보이지 않는 static physics 바디를 따로 만들어서
-        // wallGroup에 등록 (플레이어 충돌 판정용)
         if (tile === TILE.WALL || tile === TILE.BLOCK) {
           const body = this.physics.add.staticImage(pos.x, pos.y, key);
           body.setVisible(false);
@@ -148,8 +165,6 @@ export default class GameScene extends Phaser.Scene {
     );
   }
 
-  // ★ 참고: canWalk는 Enemy.js 등 다른 곳에서 여전히 쓸 수 있어서 그대로 둠.
-  // 플레이어 이동은 이제 이 함수를 거치지 않고 physics collider로 처리됨.
   canWalk(col, row, allowThroughBomb = false, isPlayer = false) {
     if (col < 0 || col >= MAP_COLS || row < 0 || row >= MAP_ROWS) {
       return false;
@@ -185,6 +200,8 @@ export default class GameScene extends Phaser.Scene {
     }
 
     const bomb = new Bomb(this, col, row, owner);
+    // ★ 추가: 방금 만든 폭탄의 물리 바디를 bombGroup에 등록
+    this.bombGroup.add(bomb.sprite);
     this.bombs.push(bomb);
     owner.activeBombs += 1;
     this.updateHud();
@@ -319,8 +336,6 @@ export default class GameScene extends Phaser.Scene {
       tileSprite.setDepth(0);
     }
 
-    // ★ 추가: 블록이 파괴되면 해당 위치의 물리 바디도 함께 제거
-    // (제거하지 않으면 시각적으로는 통로가 뚫렸는데 실제로는 못 지나가게 됨)
     const body = this.wallBodies[row][col];
     if (body) {
       this.wallGroup.remove(body, true, true);
@@ -374,12 +389,18 @@ export default class GameScene extends Phaser.Scene {
       return;
     }
 
-    this.player?.update();
+    // ★ 변경: time, delta 전달
+    this.player?.update(time, delta);
 
     this.enemies.forEach((enemy) => {
       if (enemy.alive) {
         enemy.update(time, delta);
       }
+    });
+
+    // ★ 추가: 매 프레임 각 폭탄의 "예외 대상이 벗어났는지" 검사
+    this.bombs.forEach((bomb) => {
+      bomb.checkExit();
     });
 
     this.items.forEach((item) => {

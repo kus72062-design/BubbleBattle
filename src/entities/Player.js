@@ -13,7 +13,6 @@ export default class Player {
     this.col = col;
     this.row = row;
     this.alive = true;
-    // ★ 삭제: this.moving 플래그는 더 이상 사용하지 않음 (타일 단위 이동 락 제거)
     this.speed = PLAYER_SPEED;
     this.maxBombs = 1;
     this.bombPower = 2;
@@ -26,8 +25,7 @@ export default class Player {
     this.sprite.body.setOffset(10, 12);
     this.sprite.setCollideWorldBounds(false);
 
-    // ★ 추가: (0,0) 좌표의 픽셀 위치를 기준점으로 저장해서
-    // 이후 현재 픽셀 위치 -> col/row 역산에 사용
+    // ★ 추가: col/row <-> 픽셀 좌표 변환 기준점
     this.originPos = gridToPixel(0, 0);
 
     this.cursors = scene.input.keyboard.createCursorKeys();
@@ -40,10 +38,7 @@ export default class Player {
       bombAlt: Phaser.Input.Keyboard.KeyCodes.Z
     });
 
-    // ★ 추가: 방향 스택 방식으로 입력 처리
-    // 가장 "최근에 누른" 방향키가 항상 우선 적용되고,
-    // 그 키를 떼면 그 전에 누르고 있던 다른 방향키로 즉시 복귀함.
-    // (크아처럼 이동 중에도 바로바로 방향 전환되는 느낌의 핵심)
+    // ★ 추가: 가장 최근에 누른 방향키가 항상 우선 적용되는 방향 스택
     this.directionStack = [];
 
     const bindDirection = (key, dir) => {
@@ -66,42 +61,54 @@ export default class Player {
     bindDirection(this.keys.right, DIR.RIGHT);
   }
 
-  update() {
+  // ★ 변경: GameScene에서 update(time, delta)로 호출하도록 파라미터 추가
+  update(time, delta) {
     if (!this.alive) {
-      // ★ 죽은 상태에서는 속도를 0으로 고정
       this.sprite.setVelocity(0, 0);
       return;
     }
 
-    // ★ 매 프레임 실제 픽셀 위치 기준으로 col/row 갱신 (폭탄 설치 등에 사용)
     this.updateGridPosition();
 
-    // ★ 변경: tryMove(타일 단위 트윈 이동) 대신
-    // 방향 스택 최상단 방향으로 매 프레임 velocity를 직접 설정 -> 연속 이동
     const direction = this.directionStack[this.directionStack.length - 1] || null;
 
+    let vx = 0;
+    let vy = 0;
+
+    // ★ 추가: 이동 방향과 수직인 축을 타일 중앙으로 계속 부드럽게 당겨줌
+    // -> 코너(벽 모서리)에서 몸통이 걸리지 않고 자연스럽게 턴이 됨
     if (direction) {
-      this.sprite.setVelocity(direction.x * this.speed, direction.y * this.speed);
-    } else {
-      this.sprite.setVelocity(0, 0);
+      if (direction.x !== 0) {
+        vx = direction.x * this.speed;
+        vy = this.getAlignCorrection(this.sprite.y, this.originPos.y);
+      } else if (direction.y !== 0) {
+        vy = direction.y * this.speed;
+        vx = this.getAlignCorrection(this.sprite.x, this.originPos.x);
+      }
     }
+
+    this.sprite.setVelocity(vx, vy);
 
     if (Phaser.Input.Keyboard.JustDown(this.keys.bomb) || Phaser.Input.Keyboard.JustDown(this.keys.bombAlt)) {
       this.scene.tryPlaceBomb(this.col, this.row, this);
     }
   }
 
-  // ★ 추가: 현재 스프라이트의 픽셀 좌표를 기준으로 col/row를 역산
+  // ★ 추가: 현재 좌표를 가장 가까운 타일 중앙으로 당기는 보정 속도 계산
+  // (스프링처럼 동작 - 어긋난 정도에 비례해서 당기되 최대 speed로 제한)
+  getAlignCorrection(pos, originCoord) {
+    const nearest = originCoord + Math.round((pos - originCoord) / TILE_SIZE) * TILE_SIZE;
+    const diff = nearest - pos;
+    const correctionSpeed = this.speed;
+    return Phaser.Math.Clamp(diff * 8, -correctionSpeed, correctionSpeed);
+  }
+
   updateGridPosition() {
     const offsetX = this.sprite.x - this.originPos.x;
     const offsetY = this.sprite.y - this.originPos.y;
     this.col = Math.round(offsetX / TILE_SIZE);
     this.row = Math.round(offsetY / TILE_SIZE);
   }
-
-  // ★ 삭제: tryMove(direction) 메서드 전체 제거
-  // (타일 단위 트윈 이동 로직은 더 이상 필요 없음 - 벽 충돌은
-  // GameScene에서 physics collider로 처리)
 
   onBombExploded() {
     this.activeBombs = Math.max(0, this.activeBombs - 1);
@@ -128,7 +135,6 @@ export default class Player {
       return;
     }
     this.alive = false;
-    // ★ 추가: 죽는 순간 즉시 정지
     this.sprite.setVelocity(0, 0);
     this.sprite.setTint(0x555555);
     this.sprite.anims?.stop();
