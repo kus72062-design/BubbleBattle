@@ -286,6 +286,12 @@ export default class GameScene extends Phaser.Scene {
   }
 
   damageAtCells(cells) {
+    // ★ 수정: 폭발 처리 시작 전 기존 아이템 스냅샷을 떠둠.
+    // destroyBlockAt이 이 forEach 도중 새 아이템을 생성하는데,
+    // this.items를 직접 순회하면 방금 생성된 아이템까지 같은 루프에서
+    // "폭발 범위에 있다"고 오판해 즉시 파괴해버리는 버그가 있었음.
+    const existingItems = this.items.slice();
+
     cells.forEach(({ col, row }) => {
       if (this.grid[row][col] === TILE.BLOCK) {
         this.destroyBlockAt(col, row);
@@ -302,7 +308,8 @@ export default class GameScene extends Phaser.Scene {
         }
       });
 
-      this.items.forEach((item) => {
+      // ★ 변경: this.items 대신 existingItems(스냅샷) 기준으로 체크
+      existingItems.forEach((item) => {
         if (!item.collected && item.col === col && item.row === row) {
           item.destroy();
           item.collected = true;
@@ -315,8 +322,6 @@ export default class GameScene extends Phaser.Scene {
   }
 
   destroyBlockAt(col, row) {
-    console.log('1️⃣ destroyBlockAt 호출됨', col, row);
-    console.log('2️⃣ grid 값:', this.grid[row][col], 'TILE.BLOCK:', TILE.BLOCK);
     if (this.grid[row][col] !== TILE.BLOCK) {
       return;
     }

@@ -36,8 +36,8 @@ export default class Player {
     this.bombPower = 1;
     this.activeBombs = 0;
 
-    // ★ 추가: 스테이지 전용 바늘 보유 여부
-    this.hasNeedle = false;
+    // ★ 변경: 박스 드랍이 아니라 스테이지 시작 시 기본 1개 보유
+    this.hasNeedle = true;
     this.trapTimer = null;
     this.trapTween = null;
 

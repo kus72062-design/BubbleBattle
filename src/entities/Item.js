@@ -58,8 +58,8 @@ export function randomItemType() {
   const weighted = [
     { type: ITEM_TYPE.SPEED, weight: 9 },
     { type: ITEM_TYPE.BOMB, weight: 9 },
-    { type: ITEM_TYPE.POWER, weight: 9 },
-    { type: ITEM_TYPE.NEEDLE, weight: 1 }
+    { type: ITEM_TYPE.POWER, weight: 9 }
+    // ★ 제거: NEEDLE 드랍은 이제 스테이지 시작 시 자동 지급으로 대체
   ];
 
   const totalWeight = weighted.reduce((sum, w) => sum + w.weight, 0);
