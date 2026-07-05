@@ -93,6 +93,27 @@ export default class BootScene extends Phaser.Scene {
     g.fillRect(22, 18, 4, 12);
     g.generateTexture('item_power', TILE_SIZE, TILE_SIZE);
 
+    // ★ 추가: 바늘(needle) 아이템 텍스처 - 흰색 바늘 모양 + 붉은 원 포인트
+    g.clear();
+    g.fillStyle(0x37474f, 1);
+    g.fillCircle(TILE_SIZE / 2, TILE_SIZE / 2, 12);
+    g.lineStyle(3, COLORS.itemNeedle, 1);
+    g.lineBetween(TILE_SIZE / 2 - 8, TILE_SIZE / 2 + 8, TILE_SIZE / 2 + 8, TILE_SIZE / 2 - 8);
+    g.fillStyle(0xff5252, 1);
+    g.fillCircle(TILE_SIZE / 2 + 8, TILE_SIZE / 2 - 8, 3);
+    g.generateTexture('item_needle', TILE_SIZE, TILE_SIZE);
+
+    // ★ 추가: trapped 상태 표현용 큰 물풍선(버블) 텍스처 - 타일보다 크게
+    const bubbleSize = Math.round(TILE_SIZE * 1.5);
+    g.clear();
+    g.fillStyle(COLORS.trapBubble, 0.45);
+    g.fillCircle(bubbleSize / 2, bubbleSize / 2, bubbleSize / 2 - 3);
+    g.lineStyle(3, 0xffffff, 0.9);
+    g.strokeCircle(bubbleSize / 2, bubbleSize / 2, bubbleSize / 2 - 3);
+    g.fillStyle(0xffffff, 0.5);
+    g.fillCircle(bubbleSize / 2 - 10, bubbleSize / 2 - 12, 6);
+    g.generateTexture('player_trapped', bubbleSize, bubbleSize);
+
     g.destroy();
 
     this.registry.set('gameSize', {

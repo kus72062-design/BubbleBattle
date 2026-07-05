@@ -1,32 +1,49 @@
+console.log('★★★ Player.js LOADED v5 (trapped system) ★★★');
+
 import * as Phaser from 'phaser';
 import {
-  TILE_SIZE,
   PLAYER_SPEED,
   DIR,
-  ITEM_TYPE
+  ITEM_TYPE,
+  MAX_BOMB_POWER,
+  TRAPPED_DURATION_MS
 } from '../config/Constants.js';
 import { gridToPixel } from '../map/LevelData.js';
+import {
+  pixelToCol,
+  pixelToRow,
+  canOccupy,
+  laneCorrectionVelocity,
+  originX,
+  originY
+} from '../utils/GridMovement.js';
+
+const HALF_W = 14;
+const HALF_H = 14;
 
 export default class Player {
   constructor(scene, col, row) {
     this.scene = scene;
     this.col = col;
     this.row = row;
-    this.alive = true;
+
+    // ★ 변경: alive 불리언 대신 상태머신 사용 (normal / trapped / dead)
+    this.state = 'normal';
+
     this.speed = PLAYER_SPEED;
     this.maxBombs = 1;
-    this.bombPower = 2;
+    // ★ 변경: 기본 폭발 범위 1x1 (십자 팔 길이 0 = 설치 칸만 폭발)
+    this.bombPower = 1;
     this.activeBombs = 0;
 
-    const pos = gridToPixel(col, row);
-    this.sprite = scene.physics.add.sprite(pos.x, pos.y, 'player');
-    this.sprite.setDepth(10);
-    this.sprite.body.setSize(28, 28);
-    this.sprite.body.setOffset(10, 12);
-    this.sprite.setCollideWorldBounds(false);
+    // ★ 추가: 스테이지 전용 바늘 보유 여부
+    this.hasNeedle = false;
+    this.trapTimer = null;
+    this.trapTween = null;
 
-    // ★ 추가: col/row <-> 픽셀 좌표 변환 기준점
-    this.originPos = gridToPixel(0, 0);
+    const pos = gridToPixel(col, row);
+    this.sprite = scene.add.sprite(pos.x, pos.y, 'player');
+    this.sprite.setDepth(10);
 
     this.cursors = scene.input.keyboard.createCursorKeys();
     this.keys = scene.input.keyboard.addKeys({
@@ -35,10 +52,12 @@ export default class Player {
       left: Phaser.Input.Keyboard.KeyCodes.A,
       right: Phaser.Input.Keyboard.KeyCodes.D,
       bomb: Phaser.Input.Keyboard.KeyCodes.SPACE,
-      bombAlt: Phaser.Input.Keyboard.KeyCodes.Z
+      bombAlt: Phaser.Input.Keyboard.KeyCodes.Z,
+      // ★ 추가: 바늘 사용 키
+      needle: Phaser.Input.Keyboard.KeyCodes.ONE,
+      needleAlt: Phaser.Input.Keyboard.KeyCodes.CTRL
     });
 
-    // ★ 추가: 가장 최근에 누른 방향키가 항상 우선 적용되는 방향 스택
     this.directionStack = [];
 
     const bindDirection = (key, dir) => {
@@ -61,53 +80,72 @@ export default class Player {
     bindDirection(this.keys.right, DIR.RIGHT);
   }
 
-  // ★ 변경: GameScene에서 update(time, delta)로 호출하도록 파라미터 추가
+  // ★ 추가: 기존 코드 곳곳에서 player.alive를 참조하므로 호환용 getter 제공
+  // (dead가 아니면 true - trapped도 "아직 살아있는" 상태로 취급)
+  get alive() {
+    return this.state !== 'dead';
+  }
+
+  isBlocked(col, row) {
+    return !this.scene.isEntityWalkable(col, row, this);
+  }
+
   update(time, delta) {
-    if (!this.alive) {
-      this.sprite.setVelocity(0, 0);
+    if (this.state === 'dead') {
       return;
     }
 
-    this.updateGridPosition();
+    // ★ 추가: 바늘 사용 판정은 trapped 상태에서도 매 프레임 체크
+    if (Phaser.Input.Keyboard.JustDown(this.keys.needle) || Phaser.Input.Keyboard.JustDown(this.keys.needleAlt)) {
+      this.useNeedle();
+    }
 
+    // ★ 추가: trapped 상태에서는 이동/폭탄설치 완전 정지
+    if (this.state === 'trapped') {
+      return;
+    }
+
+    const deltaSec = delta / 1000;
     const direction = this.directionStack[this.directionStack.length - 1] || null;
 
-    let vx = 0;
-    let vy = 0;
-
-    // ★ 추가: 이동 방향과 수직인 축을 타일 중앙으로 계속 부드럽게 당겨줌
-    // -> 코너(벽 모서리)에서 몸통이 걸리지 않고 자연스럽게 턴이 됨
     if (direction) {
       if (direction.x !== 0) {
-        vx = direction.x * this.speed;
-        vy = this.getAlignCorrection(this.sprite.y, this.originPos.y);
+        this.moveAxis('x', direction.x * this.speed * deltaSec);
+        const vy = laneCorrectionVelocity(this.sprite.y, originY(), this.speed);
+        this.moveAxis('y', vy * deltaSec);
       } else if (direction.y !== 0) {
-        vy = direction.y * this.speed;
-        vx = this.getAlignCorrection(this.sprite.x, this.originPos.x);
+        this.moveAxis('y', direction.y * this.speed * deltaSec);
+        const vx = laneCorrectionVelocity(this.sprite.x, originX(), this.speed);
+        this.moveAxis('x', vx * deltaSec);
       }
     }
 
-    this.sprite.setVelocity(vx, vy);
+    this.col = pixelToCol(this.sprite.x);
+    this.row = pixelToRow(this.sprite.y);
 
     if (Phaser.Input.Keyboard.JustDown(this.keys.bomb) || Phaser.Input.Keyboard.JustDown(this.keys.bombAlt)) {
       this.scene.tryPlaceBomb(this.col, this.row, this);
     }
   }
 
-  // ★ 추가: 현재 좌표를 가장 가까운 타일 중앙으로 당기는 보정 속도 계산
-  // (스프링처럼 동작 - 어긋난 정도에 비례해서 당기되 최대 speed로 제한)
-  getAlignCorrection(pos, originCoord) {
-    const nearest = originCoord + Math.round((pos - originCoord) / TILE_SIZE) * TILE_SIZE;
-    const diff = nearest - pos;
-    const correctionSpeed = this.speed;
-    return Phaser.Math.Clamp(diff * 8, -correctionSpeed, correctionSpeed);
-  }
+  moveAxis(axis, amount) {
+    if (amount === 0) {
+      return;
+    }
 
-  updateGridPosition() {
-    const offsetX = this.sprite.x - this.originPos.x;
-    const offsetY = this.sprite.y - this.originPos.y;
-    this.col = Math.round(offsetX / TILE_SIZE);
-    this.row = Math.round(offsetY / TILE_SIZE);
+    const prevX = this.sprite.x;
+    const prevY = this.sprite.y;
+
+    if (axis === 'x') {
+      this.sprite.x += amount;
+    } else {
+      this.sprite.y += amount;
+    }
+
+    if (!canOccupy(this.sprite.x, this.sprite.y, HALF_W, HALF_H, (c, r) => this.isBlocked(c, r))) {
+      this.sprite.x = prevX;
+      this.sprite.y = prevY;
+    }
   }
 
   onBombExploded() {
@@ -117,31 +155,101 @@ export default class Player {
   applyItem(type) {
     switch (type) {
       case ITEM_TYPE.SPEED:
-        this.speed = Math.min(this.speed + 25, 220);
+        this.speed = Math.min(this.speed + 25, 260);
         break;
       case ITEM_TYPE.BOMB:
-        this.maxBombs = Math.min(this.maxBombs + 1, 5);
+        this.maxBombs = Math.min(this.maxBombs + 1, 8);
         break;
       case ITEM_TYPE.POWER:
-        this.bombPower = Math.min(this.bombPower + 1, 8);
+        this.bombPower = Math.min(this.bombPower + 1, MAX_BOMB_POWER);
+        break;
+      case ITEM_TYPE.NEEDLE:
+        // ★ 추가: 이미 보유 중이면 중복 획득 무시 (스테이지당 1회 사용 컨셉 유지)
+        this.hasNeedle = true;
         break;
       default:
         break;
     }
   }
 
-  kill() {
-    if (!this.alive) {
+  // ★ 추가: 폭발/적 접촉 등 "피격" 발생 시 호출. 즉사 대신 trapped로 전환
+  trap() {
+    if (this.state !== 'normal') {
       return;
     }
-    this.alive = false;
-    this.sprite.setVelocity(0, 0);
+
+    this.state = 'trapped';
+    this.sprite.setTexture('player_trapped');
+
+    // 물풍선 안에 갇힌 느낌의 미세한 통통 튀는 애니메이션
+    this.trapTween = this.scene.tweens.add({
+      targets: this.sprite,
+      scaleX: 1.08,
+      scaleY: 0.92,
+      duration: 350,
+      yoyo: true,
+      repeat: -1,
+      ease: 'Sine.easeInOut'
+    });
+
+    this.trapTimer = this.scene.time.delayedCall(TRAPPED_DURATION_MS, () => {
+      this.die();
+    });
+  }
+
+  // ★ 추가: 바늘로 trapped 상태에서 즉시 탈출
+  useNeedle() {
+    if (!this.hasNeedle || this.state !== 'trapped') {
+      return;
+    }
+
+    this.hasNeedle = false;
+    this.releaseFromTrap();
+  }
+
+  releaseFromTrap() {
+    if (this.trapTimer) {
+      this.trapTimer.remove(false);
+      this.trapTimer = null;
+    }
+    if (this.trapTween) {
+      this.trapTween.stop();
+      this.trapTween = null;
+    }
+    this.sprite.setScale(1);
+    this.sprite.setTexture('player');
+    this.state = 'normal';
+  }
+
+  die() {
+    if (this.state === 'dead') {
+      return;
+    }
+
+    if (this.trapTimer) {
+      this.trapTimer.remove(false);
+      this.trapTimer = null;
+    }
+    if (this.trapTween) {
+      this.trapTween.stop();
+      this.trapTween = null;
+    }
+
+    this.state = 'dead';
+    this.sprite.setTexture('player');
+    this.sprite.setScale(1);
     this.sprite.setTint(0x555555);
     this.sprite.anims?.stop();
     this.scene.onPlayerDeath();
   }
 
   destroy() {
+    if (this.trapTimer) {
+      this.trapTimer.remove(false);
+    }
+    if (this.trapTween) {
+      this.trapTween.stop();
+    }
     this.sprite.destroy();
   }
 }

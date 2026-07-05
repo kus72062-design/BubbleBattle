@@ -5,7 +5,9 @@ import { gridToPixel } from '../map/LevelData.js';
 const TEXTURE_MAP = {
   [ITEM_TYPE.SPEED]: 'item_speed',
   [ITEM_TYPE.BOMB]: 'item_bomb',
-  [ITEM_TYPE.POWER]: 'item_power'
+  [ITEM_TYPE.POWER]: 'item_power',
+  // ★ 추가
+  [ITEM_TYPE.NEEDLE]: 'item_needle'
 };
 
 export default class Item {
@@ -50,7 +52,25 @@ export default class Item {
   }
 }
 
+// ★ 변경: 가중치 기반 랜덤 - 바늘(needle)은 훨씬 희귀하게 등장
+// SPEED/BOMB/POWER 각각 가중치 9, NEEDLE 가중치 1 -> 전체 드랍 중 약 3.6%가 바늘
 export function randomItemType() {
-  const types = [ITEM_TYPE.SPEED, ITEM_TYPE.BOMB, ITEM_TYPE.POWER];
-  return types[Phaser.Math.Between(0, types.length - 1)];
+  const weighted = [
+    { type: ITEM_TYPE.SPEED, weight: 9 },
+    { type: ITEM_TYPE.BOMB, weight: 9 },
+    { type: ITEM_TYPE.POWER, weight: 9 },
+    { type: ITEM_TYPE.NEEDLE, weight: 1 }
+  ];
+
+  const totalWeight = weighted.reduce((sum, w) => sum + w.weight, 0);
+  let roll = Phaser.Math.Between(1, totalWeight);
+
+  for (const entry of weighted) {
+    if (roll <= entry.weight) {
+      return entry.type;
+    }
+    roll -= entry.weight;
+  }
+
+  return ITEM_TYPE.SPEED;
 }

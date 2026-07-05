@@ -1,3 +1,5 @@
+console.log('★★★ GameScene.js LOADED v5 (stage system + trapped) ★★★');
+
 import * as Phaser from 'phaser';
 import {
   TILE_SIZE,
@@ -5,7 +7,10 @@ import {
   MAP_ROWS,
   TILE,
   EXPLOSION_DURATION_MS,
-  DIR
+  DIR,
+  ITEM_DROP_CHANCE,
+  STAGE_CLEAR_DELAY_MS,
+  TOTAL_STAGES
 } from '../config/Constants.js';
 import { createLevel, gridToPixel } from '../map/LevelData.js';
 import Player from '../entities/Player.js';
@@ -18,12 +23,18 @@ export default class GameScene extends Phaser.Scene {
     super('GameScene');
   }
 
+  // ★ 추가: scene.restart({ stage: n })으로 전달받은 스테이지 번호를 기억
+  // (없으면 1스테이지부터 시작)
+  init(data) {
+    this.currentStage = (data && data.stage) || 1;
+  }
+
   create() {
-    this.gameOver = false;
-    this.gameWon = false;
+    // ★ 추가: 씬 진행 단계 상태머신 ('playing' | 'clearing' | 'dead' | 'complete')
+    this.phase = 'playing';
+
     this.grid = [];
     this.tileSprites = [];
-    this.wallBodies = [];
     this.bombs = [];
     this.items = [];
     this.enemies = [];
@@ -34,55 +45,25 @@ export default class GameScene extends Phaser.Scene {
     const level = createLevel();
     this.grid = level.grid;
 
-    this.enemyGroup = this.physics.add.group();
-    this.wallGroup = this.physics.add.staticGroup();
-    // ★ 추가: 폭탄 전용 물리 그룹
-    this.bombGroup = this.physics.add.staticGroup();
-
     this.drawMap();
-
     this.player = new Player(this, 1, 1);
     this.spawnEnemies();
     this.createHud();
 
-    // 플레이어 <-> 벽/블록 충돌
-    this.physics.add.collider(this.player.sprite, this.wallGroup);
-    // ★ 추가: 적 <-> 벽/블록 충돌 (AI 판단 로직의 보험 역할)
-    this.physics.add.collider(this.enemyGroup, this.wallGroup);
+    this.restartKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
 
-    // ★ 추가: 적 <-> 폭탄 충돌 (적은 예외 없이 항상 막힘)
-    this.physics.add.collider(this.enemyGroup, this.bombGroup);
-
-    // ★ 추가: 플레이어 <-> 폭탄 충돌
-    // processCallback: 해당 폭탄이 "지금 이 플레이어를 통과시켜주는 상태"면
-    // 충돌을 스킵(false)하고, 아니면 정상적으로 충돌 처리(true)
-    this.physics.add.collider(
-      this.player.sprite,
-      this.bombGroup,
-      null,
-      (playerSprite, bombSprite) => {
-        const bomb = bombSprite.getData('bombRef');
-        if (!bomb) {
-          return true;
-        }
-        return !bomb.isExempt(this.player);
-      },
-      this
-    );
-
-    this.physics.add.overlap(this.player.sprite, this.enemyGroup, () => {
-      if (!this.gameOver && this.player.alive) {
-        this.player.kill();
+    // ★ 추가: 스테이지 시작 안내 텍스트 (잠깐 표시 후 자동으로 사라짐)
+    this.statusText.setText(`STAGE ${this.currentStage}`);
+    this.time.delayedCall(1200, () => {
+      if (this.phase === 'playing') {
+        this.statusText.setText('');
       }
     });
-
-    this.restartKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.R);
   }
 
   drawMap() {
     for (let row = 0; row < MAP_ROWS; row++) {
       this.tileSprites[row] = [];
-      this.wallBodies[row] = [];
       for (let col = 0; col < MAP_COLS; col++) {
         const pos = gridToPixel(col, row);
         const tile = this.grid[row][col];
@@ -97,17 +78,6 @@ export default class GameScene extends Phaser.Scene {
         const sprite = this.add.image(pos.x, pos.y, key);
         sprite.setDepth(tile === TILE.WALL ? 1 : 0);
         this.tileSprites[row][col] = sprite;
-
-        if (tile === TILE.WALL || tile === TILE.BLOCK) {
-          const body = this.physics.add.staticImage(pos.x, pos.y, key);
-          body.setVisible(false);
-          body.setSize(TILE_SIZE, TILE_SIZE);
-          body.refreshBody();
-          this.wallGroup.add(body);
-          this.wallBodies[row][col] = body;
-        } else {
-          this.wallBodies[row][col] = null;
-        }
       }
     }
   }
@@ -125,7 +95,7 @@ export default class GameScene extends Phaser.Scene {
 
     this.hudText = this.add.text(16, hudY - 12, '', {
       fontFamily: 'Segoe UI, sans-serif',
-      fontSize: '16px',
+      fontSize: '15px',
       color: '#ffffff'
     }).setDepth(101);
 
@@ -148,7 +118,6 @@ export default class GameScene extends Phaser.Scene {
     spawnPoints.forEach((spawn) => {
       const enemy = new Enemy(this, spawn.col, spawn.row);
       this.enemies.push(enemy);
-      this.enemyGroup.add(enemy.sprite);
     });
   }
 
@@ -158,36 +127,59 @@ export default class GameScene extends Phaser.Scene {
     }
 
     const aliveEnemies = this.enemies.filter((e) => e.alive).length;
+    const needleText = this.player.hasNeedle ? '바늘 보유(1/Ctrl)' : '바늘 없음';
+
     this.hudText.setText(
+      `STAGE ${this.currentStage}/${TOTAL_STAGES}  |  ` +
       `물풍선: ${this.player.activeBombs}/${this.player.maxBombs}  |  ` +
       `위력: ${this.player.bombPower}  |  ` +
-      `적: ${aliveEnemies}`
+      `적: ${aliveEnemies}  |  ${needleText}`
     );
   }
 
-  canWalk(col, row, allowThroughBomb = false, isPlayer = false) {
+  canWalk(col, row) {
     if (col < 0 || col >= MAP_COLS || row < 0 || row >= MAP_ROWS) {
       return false;
     }
-
     const tile = this.grid[row][col];
-    if (tile === TILE.WALL || tile === TILE.BLOCK) {
-      return false;
-    }
-
-    if (!allowThroughBomb && !isPlayer && this.isBombAt(col, row)) {
-      return false;
-    }
-
-    return true;
+    return tile !== TILE.WALL && tile !== TILE.BLOCK;
   }
 
   isBombAt(col, row) {
     return this.bombs.some((bomb) => !bomb.exploded && bomb.col === col && bomb.row === row);
   }
 
+  isEntityWalkable(col, row, entity) {
+    if (!this.canWalk(col, row)) {
+      return false;
+    }
+
+    const bomb = this.bombs.find((b) => !b.exploded && b.col === col && b.row === row);
+    if (bomb && !bomb.isExempt(entity)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  // ★ 추가: 아직 터지지 않은 모든 폭탄들의 "폭발 예정 범위"를 모은 위험 지역 집합
+  // 적 AI의 폭탄 회피 판단에 사용됨
+  getDangerCells() {
+    const danger = new Set();
+
+    this.bombs.forEach((bomb) => {
+      if (bomb.exploded) {
+        return;
+      }
+      const cells = this.getExplosionCells(bomb.col, bomb.row, bomb.owner.bombPower);
+      cells.forEach(({ col, row }) => danger.add(`${col},${row}`));
+    });
+
+    return danger;
+  }
+
   tryPlaceBomb(col, row, owner) {
-    if (this.gameOver) {
+    if (this.phase !== 'playing') {
       return;
     }
 
@@ -200,8 +192,6 @@ export default class GameScene extends Phaser.Scene {
     }
 
     const bomb = new Bomb(this, col, row, owner);
-    // ★ 추가: 방금 만든 폭탄의 물리 바디를 bombGroup에 등록
-    this.bombGroup.add(bomb.sprite);
     this.bombs.push(bomb);
     owner.activeBombs += 1;
     this.updateHud();
@@ -216,7 +206,6 @@ export default class GameScene extends Phaser.Scene {
     });
 
     this.chainReaction(centerCol, centerRow, power);
-
     this.damageAtCells(cells);
 
     if (owner && owner.onBombExploded) {
@@ -256,7 +245,6 @@ export default class GameScene extends Phaser.Scene {
         if (tile === TILE.WALL) {
           break;
         }
-
         if (tile === TILE.BLOCK) {
           break;
         }
@@ -299,10 +287,13 @@ export default class GameScene extends Phaser.Scene {
 
   damageAtCells(cells) {
     cells.forEach(({ col, row }) => {
-      this.destroyBlockAt(col, row);
+      if (this.grid[row][col] === TILE.BLOCK) {
+        this.destroyBlockAt(col, row);
+      }
 
-      if (this.player?.alive && this.player.col === col && this.player.row === row) {
-        this.player.kill();
+      // ★ 변경: 즉사(kill) 대신 trapped 전환(trap)
+      if (this.player && this.player.state === 'normal' && this.player.col === col && this.player.row === row) {
+        this.player.trap();
       }
 
       this.enemies.forEach((enemy) => {
@@ -324,6 +315,8 @@ export default class GameScene extends Phaser.Scene {
   }
 
   destroyBlockAt(col, row) {
+    console.log('1️⃣ destroyBlockAt 호출됨', col, row);
+    console.log('2️⃣ grid 값:', this.grid[row][col], 'TILE.BLOCK:', TILE.BLOCK);
     if (this.grid[row][col] !== TILE.BLOCK) {
       return;
     }
@@ -336,22 +329,10 @@ export default class GameScene extends Phaser.Scene {
       tileSprite.setDepth(0);
     }
 
-    const body = this.wallBodies[row][col];
-    if (body) {
-      this.wallGroup.remove(body, true, true);
-      this.wallBodies[row][col] = null;
-    }
-
-    if (Phaser.Math.Between(0, 100) < 35) {
+    // ★ 변경: 하드코딩된 35 대신 Constants의 ITEM_DROP_CHANCE 사용
+    if (Phaser.Math.Between(0, 100) < ITEM_DROP_CHANCE) {
       const item = new Item(this, col, row, randomItemType());
       this.items.push(item);
-
-      this.physics.add.overlap(this.player.sprite, item.sprite, () => {
-        if (this.player?.alive && !item.collected) {
-          item.collect(this.player);
-          this.updateHud();
-        }
-      });
     }
   }
 
@@ -364,32 +345,90 @@ export default class GameScene extends Phaser.Scene {
     this.checkWin();
   }
 
+  // ★ 변경: 클리어 시 즉시 gameOver 처리하지 않고, 안내 후 자동 스테이지 전환
   checkWin() {
+    if (this.phase !== 'playing') {
+      return;
+    }
+
     const aliveEnemies = this.enemies.filter((e) => e.alive).length;
-    if (aliveEnemies === 0 && !this.gameOver) {
-      this.gameWon = true;
-      this.gameOver = true;
-      this.statusText.setText('승리! R키로 재시작');
+    if (aliveEnemies === 0) {
+      this.phase = 'clearing';
+      const isFinalStage = this.currentStage >= TOTAL_STAGES;
+
+      this.statusText.setText(isFinalStage ? '게임 클리어!' : `STAGE ${this.currentStage} 클리어!`);
+
+      this.time.delayedCall(STAGE_CLEAR_DELAY_MS, () => {
+        if (isFinalStage) {
+          this.phase = 'complete';
+          this.statusText.setText('축하합니다! 모든 스테이지 클리어! R키로 처음부터');
+        } else {
+          // ★ 핵심: 다음 스테이지로 - 맵/적/플레이어 전부 새로 생성되고
+          // Player가 새 인스턴스로 만들어지므로 업그레이드는 자동으로 초기화됨
+          this.scene.restart({ stage: this.currentStage + 1 });
+        }
+      });
     }
   }
 
+  // ★ 변경: 사망 시 같은 스테이지 번호를 유지한 채 재시작 대기
   onPlayerDeath() {
-    if (this.gameOver) {
+    if (this.phase !== 'playing') {
       return;
     }
-    this.gameOver = true;
-    this.statusText.setText('패배! R키로 재시작');
+    this.phase = 'dead';
+    this.statusText.setText(`STAGE ${this.currentStage} 패배! R키로 재시작`);
+  }
+
+  // ★ 변경: 즉사(kill) 대신 trapped 전환(trap)
+  checkPlayerEnemyCollision() {
+    if (!this.player || this.player.state !== 'normal') {
+      return;
+    }
+
+    const hit = this.enemies.some((enemy) => {
+      if (!enemy.alive) {
+        return false;
+      }
+      return Math.abs(this.player.sprite.x - enemy.sprite.x) < 24 &&
+             Math.abs(this.player.sprite.y - enemy.sprite.y) < 24;
+    });
+
+    if (hit) {
+      this.player.trap();
+    }
+  }
+
+  checkItemPickup() {
+    if (!this.player || this.player.state !== 'normal') {
+      return;
+    }
+
+    this.items.forEach((item) => {
+      if (!item.collected && item.sprite && item.sprite.active &&
+          this.player.col === item.col && this.player.row === item.row) {
+        item.collect(this.player);
+        item.collected = true;
+        this.updateHud();
+      }
+    });
+
+    this.items = this.items.filter((item) => !item.collected);
   }
 
   update(time, delta) {
-    if (this.gameOver) {
+    // ★ 변경: 'dead' / 'complete' 상태에서만 R키로 재시작 (같은 스테이지 유지, complete는 1스테이지로)
+    if (this.phase !== 'playing') {
       if (Phaser.Input.Keyboard.JustDown(this.restartKey)) {
-        this.scene.restart();
+        if (this.phase === 'dead') {
+          this.scene.restart({ stage: this.currentStage });
+        } else if (this.phase === 'complete') {
+          this.scene.restart({ stage: 1 });
+        }
       }
       return;
     }
 
-    // ★ 변경: time, delta 전달
     this.player?.update(time, delta);
 
     this.enemies.forEach((enemy) => {
@@ -398,18 +437,11 @@ export default class GameScene extends Phaser.Scene {
       }
     });
 
-    // ★ 추가: 매 프레임 각 폭탄의 "예외 대상이 벗어났는지" 검사
     this.bombs.forEach((bomb) => {
       bomb.checkExit();
     });
 
-    this.items.forEach((item) => {
-      if (!item.collected && item.sprite && item.sprite.active) {
-        if (this.player?.col === item.col && this.player?.row === item.row && this.player?.alive) {
-          item.collect(this.player);
-          this.updateHud();
-        }
-      }
-    });
+    this.checkPlayerEnemyCollision();
+    this.checkItemPickup();
   }
 }
